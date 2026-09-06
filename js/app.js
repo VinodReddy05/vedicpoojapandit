@@ -163,7 +163,8 @@ function saveCustomPrice(serviceId, priceMin, priceMax) {
 function getCustomImages() {
   try {
     const local = JSON.parse(localStorage.getItem('vpp_custom_images') || '{}');
-    return { ...local, ...window.VPP_CLOUD_IMAGES }; // LIVE CLOUD DB ALWAYS WINS OVER LOCAL STALE CACHE!
+    const cloud = window.VPP_CLOUD_IMAGES || {};
+    return { ...cloud, ...local }; // LOCAL STORAGE OVERRIDES STALE ENTRIES SO REFRESH NEVER REVERTS!
   } catch (e) {
     return window.VPP_CLOUD_IMAGES || {};
   }
