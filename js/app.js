@@ -8,6 +8,7 @@ const state = {
 
 // Firebase Cloud Configuration & Global Realtime Sync
 window.VPP_CLOUD_IMAGES = {};
+window.VPP_CLOUD_PRICES = {};
 let db = null;
 let storage = null;
 let auth = null;
@@ -30,7 +31,7 @@ try {
     if (firebase.storage) storage = firebase.storage();
     if (firebase.auth) auth = firebase.auth();
 
-    // Listen for Realtime Cloud Database updates across all devices
+    // Listen for Realtime Cloud Image Database updates across all devices
     db.collection("custom_images").onSnapshot((snapshot) => {
       snapshot.forEach((doc) => {
         const data = doc.data();
@@ -38,13 +39,26 @@ try {
           window.VPP_CLOUD_IMAGES[doc.id] = data.image;
         }
       });
-      // Refresh current view live on all devices when cloud image updates
       if (typeof handleRoute === 'function') {
         handleRoute();
       }
-    }, (error) => {
-      console.warn("Cloud DB realtime listener running in offline mode.");
-    });
+    }, (error) => {});
+
+    // Listen for Realtime Cloud Price Database updates across all devices
+    db.collection("custom_prices").onSnapshot((snapshot) => {
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        if (data && (data.priceMin !== undefined || data.priceMax !== undefined)) {
+          window.VPP_CLOUD_PRICES[doc.id] = {
+            priceMin: data.priceMin,
+            priceMax: data.priceMax
+          };
+        }
+      });
+      if (typeof handleRoute === 'function') {
+        handleRoute();
+      }
+    }, (error) => {});
   }
 } catch (e) {
   console.warn("Cloud DB fallback mode:", e);
@@ -68,7 +82,7 @@ function compressImageFile(file, callback) {
       const canvas = document.createElement('canvas');
       let width = img.width;
       let height = img.height;
-      const MAX_WIDTH = 800;
+      const MAX_WIDTH = 650;
 
       if (width > MAX_WIDTH) {
         height = Math.round((height * MAX_WIDTH) / width);
@@ -81,7 +95,7 @@ function compressImageFile(file, callback) {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, width, height);
 
-      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75);
       callback(compressedDataUrl);
     };
     img.onerror = function() {
@@ -94,19 +108,43 @@ function compressImageFile(file, callback) {
 
 function getCustomPrices() {
   try {
-    return JSON.parse(localStorage.getItem('vpp_custom_prices') || '{}');
+    const local = JSON.parse(localStorage.getItem('vpp_custom_prices') || '{}');
+    return { ...local, ...(window.VPP_CLOUD_PRICES || {}) };
   } catch (e) {
-    return {};
+    return window.VPP_CLOUD_PRICES || {};
   }
 }
 
 function saveCustomPrice(serviceId, priceMin, priceMax) {
-  const prices = getCustomPrices();
-  prices[serviceId] = {
-    priceMin: parseInt(priceMin) || 0,
-    priceMax: parseInt(priceMax) || 0
-  };
-  localStorage.setItem('vpp_custom_prices', JSON.stringify(prices));
+  if (!serviceId) return;
+  if (!window.VPP_CLOUD_PRICES) window.VPP_CLOUD_PRICES = {};
+
+  const currentPrices = getCustomPrices();
+  const existing = currentPrices[serviceId] || {};
+
+  const minParsed = (priceMin !== undefined && priceMin !== '' && priceMin !== null) ? parseInt(priceMin, 10) : existing.priceMin;
+  const maxParsed = (priceMax !== undefined && priceMax !== '' && priceMax !== null) ? parseInt(priceMax, 10) : existing.priceMax;
+
+  const finalMin = !isNaN(minParsed) ? minParsed : (existing.priceMin || 0);
+  const finalMax = !isNaN(maxParsed) ? maxParsed : (existing.priceMax || 0);
+
+  window.VPP_CLOUD_PRICES[serviceId] = { priceMin: finalMin, priceMax: finalMax };
+
+  try {
+    const prices = JSON.parse(localStorage.getItem('vpp_custom_prices') || '{}');
+    prices[serviceId] = { priceMin: finalMin, priceMax: finalMax };
+    localStorage.setItem('vpp_custom_prices', JSON.stringify(prices));
+  } catch (e) {}
+
+  if (db) {
+    try {
+      db.collection("custom_prices").doc(serviceId).set({
+        priceMin: finalMin,
+        priceMax: finalMax,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (e) {}
+  }
 }
 
 function getCustomImages() {
@@ -118,7 +156,7 @@ function getCustomImages() {
   }
 }
 
-function saveCustomImage(serviceId, imageData, fileBlob) {
+function saveCustomImage(serviceId, imageData) {
   // 1. Save to Local Memory & LocalStorage (Instant local feedback)
   window.VPP_CLOUD_IMAGES[serviceId] = imageData;
   try {
@@ -134,34 +172,47 @@ function saveCustomImage(serviceId, imageData, fileBlob) {
         image: imageData,
         updatedAt: new Date().toISOString()
       }).then(() => {
-        showToast('☁️ Saved to Firebase Cloud! Visible live on all devices globally.');
+        showToast('☁️ Saved to Cloud! Syncing live across all devices globally.');
       }).catch((err) => {
-        console.warn("Cloud Firestore save fallback:", err);
+        console.warn("Cloud Firestore save warning:", err);
       });
     } catch (e) {}
   }
+}
 
-  // 3. Secondary: Try Firebase Storage upload (Swallow CORS preflight errors gracefully)
-  if (storage && fileBlob) {
-    try {
-      const storageRef = storage.ref(`pooja_images/${serviceId}_${Date.now()}.jpg`);
-      storageRef.put(fileBlob).then((snapshot) => {
-        return snapshot.ref.getDownloadURL();
-      }).then((downloadURL) => {
-        if (downloadURL) {
-          window.VPP_CLOUD_IMAGES[serviceId] = downloadURL;
-          if (db) {
-            db.collection("custom_images").doc(serviceId).set({
-              image: downloadURL,
-              updatedAt: new Date().toISOString()
-            });
-          }
+// Free High-Speed Public CDN Helper (Generates 100% CORS-free public image URL)
+function uploadToFreeCDN(base64Data, serviceId) {
+  try {
+    const apiKey = "6d207e02198a847aa98d0a2a901485a5";
+    const formData = new FormData();
+    const cleanBase64 = base64Data.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
+    formData.append("image", cleanBase64);
+
+    fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+      method: "POST",
+      body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data && data.data && data.data.url) {
+        const cdnUrl = data.data.url;
+        window.VPP_CLOUD_IMAGES[serviceId] = cdnUrl;
+        try {
+          const images = JSON.parse(localStorage.getItem('vpp_custom_images') || '{}');
+          images[serviceId] = cdnUrl;
+          localStorage.setItem('vpp_custom_images', JSON.stringify(images));
+        } catch (e) {}
+
+        if (db) {
+          db.collection("custom_images").doc(serviceId).set({
+            image: cdnUrl,
+            updatedAt: new Date().toISOString()
+          });
         }
-      }).catch((err) => {
-        console.info("Firebase Storage CORS notice: Firestore Realtime Cloud distribution active.");
-      });
-    } catch (e) {}
-  }
+      }
+    })
+    .catch((e) => {});
+  } catch (e) {}
 }
 
 function resetCustomService(serviceId) {
@@ -209,46 +260,89 @@ function showToast(message) {
 function getServiceImage(rawService) {
   if (!rawService) return 'assets/images/devotion.png';
   
-  // 1. Check live custom cloud image FIRST!
-  const customImages = getCustomImages();
-  if (customImages[rawService.id]) {
-    return customImages[rawService.id];
+  // 1. Check custom uploaded override from Admin / Cloud DB
+  if (rawService.id && window.VPP_CLOUD_IMAGES && window.VPP_CLOUD_IMAGES[rawService.id]) {
+    return window.VPP_CLOUD_IMAGES[rawService.id];
   }
   
-  // 2. Check service object property
   const service = getEffectiveService(rawService);
-  if (service && service.image) return service.image;
-  
-  // 3. Use dynamically matched image if available
+  if (!service) return 'assets/images/devotion.png';
+
+  // 2. Exact match from SERVICE_IMAGES map
   if (window.SERVICE_IMAGES && window.SERVICE_IMAGES[service.id]) {
     return window.SERVICE_IMAGES[service.id];
   }
-  
-  const specificImages = {
-    'satyanarayana-pooja': 'assets/images/satyanarayana_pooja.png',
-    'gruhapravesam': 'assets/images/gruhapravesam.png',
-    'chandi-homam': 'assets/images/chandi_homam.png',
-    'marriage': 'assets/images/marriage.png',
-    'ganapati-pooja': 'assets/images/ganapati_pooja.png',
-    'varalakshmi-pooja': 'assets/images/varalakshmi_vratham.png',
-    'upanayanam': 'assets/images/upanayanam.png',
-    'vastu-shanti-pooja': 'assets/images/vastu_shanti.png',
-    'rudrabhishekam-pooja': 'assets/images/Vedicpoojapandi/IMG-20260905-WA0023.jpg',
-    'ayudha-pooja': 'assets/images/ayudha_pooja.png'
-  };
-  
-  if (specificImages[service.id]) {
-    return specificImages[service.id];
+
+  const sId = (service.id || '').toLowerCase();
+  const sName = (service.name || '').toLowerCase();
+
+  // 3. Smart Name & Keyword Based Image Resolver (Ensures every pooja matches its exact name!)
+  if (sId.includes('rudrabhishekam') || sId.includes('pashupatham') || sName.includes('rudra') || sName.includes('shiva') || sName.includes('abhishekam') || sName.includes('linga')) {
+    return 'assets/images/rudrabhishekam.png';
+  }
+  if (sId.includes('satyanarayana') || sName.includes('satyanarayana') || sName.includes('vishnu')) {
+    return 'assets/images/satyanarayana_pooja.png';
+  }
+  if (sId.includes('ganapati') || sId.includes('ganesh') || sName.includes('ganapathi') || sName.includes('ganesh') || sName.includes('vighneshwara')) {
+    return 'assets/images/ganapati_pooja.png';
+  }
+  if (sId.includes('gruhapravesam') || sId.includes('griha') || sName.includes('gruhapravesam') || sName.includes('housewarming') || sName.includes('probesh')) {
+    return 'assets/images/gruhapravesam.png';
+  }
+  if (sId.includes('marriage') || sId.includes('vivah') || sId.includes('sagai') || sId.includes('engagement') || sId.includes('nischitartham') || sName.includes('marriage') || sName.includes('vivah') || sName.includes('wedding')) {
+    return 'assets/images/marriage.png';
+  }
+  if (sId.includes('chandi') || sName.includes('chandi')) {
+    return 'assets/images/chandi_homam.png';
+  }
+  if (sId.includes('varalakshmi') || sId.includes('lakshmi') || sName.includes('lakshmi') || sName.includes('varalakshmi')) {
+    return 'assets/images/varalakshmi_vratham.png';
+  }
+  if (sId.includes('durga') || sId.includes('saraswathi') || sId.includes('devi') || sName.includes('durga') || sName.includes('saraswathi') || sName.includes('devi')) {
+    return 'assets/images/devi_default.png';
+  }
+  if (sId.includes('vastu') || sId.includes('bhoomi') || sName.includes('vastu') || sName.includes('bhoomi') || sName.includes('foundation')) {
+    return 'assets/images/vastu_shanti.png';
+  }
+  if (sId.includes('upanayanam') || sId.includes('upanayan') || sName.includes('upanayanam') || sName.includes('thread')) {
+    return 'assets/images/upanayanam.png';
+  }
+  if (sId.includes('ayudha') || sId.includes('vehicle') || sId.includes('car') || sId.includes('vishwakarma') || sName.includes('ayudha') || sName.includes('vehicle')) {
+    return 'assets/images/ayudha_pooja.png';
+  }
+  if (sId.includes('annaprasanam') || sId.includes('barasala') || sId.includes('namakaran') || sId.includes('seemantham') || sId.includes('noolukettu') || sId.includes('choroonu') || sName.includes('naming') || sName.includes('baby')) {
+    return 'assets/images/ceremony.png';
+  }
+  if (sId.includes('annadanam') || sId.includes('brahmin') || sId.includes('bhojan') || sId.includes('swayampaka') || sId.includes('seedha') || sName.includes('annadanam') || sName.includes('brahmin') || sName.includes('bhojan') || sName.includes('food')) {
+    return 'assets/images/brahmin_bhojan.png';
+  }
+  if (sId.includes('garud') || sName.includes('garud')) {
+    return 'assets/images/garud_puran.png';
+  }
+  if (sId.includes('tarpan') || sName.includes('tarpan')) {
+    return 'assets/images/tarpanam.png';
+  }
+  if (sId.includes('asthi') || sName.includes('asthi') || sName.includes('visarjan')) {
+    return 'assets/images/asthi_visarjan.png';
+  }
+  if (sId.includes('antim') || sName.includes('antim') || sName.includes('last rite')) {
+    return 'assets/images/antim_sanskar.png';
+  }
+  if (sId.includes('shradh') || sId.includes('taddinam') || sId.includes('samvatsarikam') || sId.includes('barsi') || sId.includes('pitru') || sName.includes('shradh') || sName.includes('taddinam') || sName.includes('barsi') || sName.includes('ancestor')) {
+    return 'assets/images/shradh_pujan.png';
+  }
+  if (sId.includes('homam') || sId.includes('havan') || sId.includes('yagna') || sId.includes('jaap') || sId.includes('shanti') || sName.includes('homam') || sName.includes('havan')) {
+    return 'assets/images/homam.png';
   }
   
   const fallbacks = {
     ceremony: 'assets/images/ceremony.png',
     pooja: 'assets/images/devotion.png',
     homam: 'assets/images/homam.png',
-    shanti: 'assets/images/devotion.png',
+    shanti: 'assets/images/homam.png',
     parihar: 'assets/images/devotion.png',
     devi: 'assets/images/devi_default.png',
-    ancestor: 'assets/images/ancestor_default.png',
+    ancestor: 'assets/images/shradh_pujan.png',
     vratam: 'assets/images/devotion.png',
     festival: 'assets/images/devotion.png'
   };
@@ -729,6 +823,13 @@ function renderAllServices() {
   initScrollObserver();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+function saveCategoryScroll(catId) {
+  try {
+    sessionStorage.setItem('vpp_scroll_' + catId, String(window.scrollY));
+  } catch (e) {}
+}
+window.saveCategoryScroll = saveCategoryScroll;
+
 function renderCategory(categoryId) {
   state.currentView = 'category';
   document.getElementById('hero-section').classList.add('hidden');
@@ -736,10 +837,15 @@ function renderCategory(categoryId) {
   
   const category = findCategory(categoryId);
   if (!category) {
-    window.location.hash = '#/';
+    renderHome();
     return;
   }
   
+  state.lastActiveCategory = category.id;
+  try {
+    sessionStorage.setItem('vpp_last_category', category.id);
+  } catch (e) {}
+
   renderBreadcrumb([
     { label: 'Home', hash: '#/' },
     { label: category.name, hash: '' }
@@ -750,7 +856,7 @@ function renderCategory(categoryId) {
   let servicesHtml = (category.services || []).map(service => {
     const imageUrl = getServiceImage(service);
     return `
-      <div class="vpp-service-card slide-up" data-category="${categoryId}" data-service="${service.id}" onclick="window.location.hash='#/service/${categoryId}/${service.id}'">
+      <div class="vpp-service-card slide-up" data-category="${category.id}" data-service="${service.id}" onclick="saveCategoryScroll('${category.id}'); window.location.hash='#/service/${category.id}/${service.id}'">
         <div class="vpp-service-card__image-wrap">
           <img src="${imageUrl}" class="vpp-service-card__img" alt="${service.name}" loading="lazy">
           <div class="vpp-service-card__gradient"></div>
@@ -778,8 +884,13 @@ function renderCategory(categoryId) {
   ` : '';
 
   content.innerHTML = `
-    <section class="vpp-section" style="padding-top: 40px">
+    <section class="vpp-section" style="padding-top: 24px">
       <div class="container">
+        <div style="margin-bottom: 16px;">
+          <a href="#/all-services" class="vpp-btn" style="background: rgba(212, 175, 55, 0.12); color: var(--color-gold-light); border: 1px solid var(--color-gold); font-size: 0.85rem; padding: 6px 14px; display: inline-flex; align-items: center; gap: 6px; border-radius: 50px; text-decoration: none;">
+            ← All Categories
+          </a>
+        </div>
         <div class="vpp-services">
           <div class="vpp-services__header">
             <h2 class="vpp-services__title">${category.name}</h2>
@@ -795,7 +906,17 @@ function renderCategory(categoryId) {
   `;
   
   initScrollObserver();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  
+  try {
+    const savedScroll = sessionStorage.getItem('vpp_scroll_' + category.id);
+    if (savedScroll) {
+      window.scrollTo({ top: parseInt(savedScroll, 10), behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  } catch (e) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 }
 
 function renderDetail(categoryId, serviceId) {
@@ -806,14 +927,20 @@ function renderDetail(categoryId, serviceId) {
   const category = findCategory(categoryId);
   const service = findService(categoryId, serviceId);
   
-  if (!category || !service) {
-    window.location.hash = '#/';
+  if (!service) {
+    if (category) {
+      window.location.hash = `#/category/${category.id}`;
+    } else {
+      renderHome();
+    }
     return;
   }
   
+  const activeCat = category || { id: categoryId, name: 'Category' };
+  
   renderBreadcrumb([
     { label: 'Home', hash: '#/' },
-    { label: category.name, hash: `#/category/${categoryId}` },
+    { label: activeCat.name, hash: `#/category/${activeCat.id}` },
     { label: service.name, hash: '' }
   ]);
   
@@ -828,8 +955,13 @@ function renderDetail(categoryId, serviceId) {
   const waText = encodeURIComponent(`Namaste! Karunakar pandit, I would like to book the ${service.name} service in ${cityName}.`);
 
   content.innerHTML = `
-    <section class="vpp-detail">
+    <section class="vpp-detail" style="padding-top: 24px">
       <div class="container">
+        <div style="margin-bottom: 20px;">
+          <a href="#/category/${activeCat.id}" class="vpp-btn" style="background: rgba(212, 175, 55, 0.15); color: var(--color-gold-light); border: 1px solid var(--color-gold); font-size: 0.88rem; padding: 8px 18px; display: inline-flex; align-items: center; gap: 6px; border-radius: 50px; text-decoration: none; cursor: pointer;">
+            ← Back to ${activeCat.name}
+          </a>
+        </div>
         <div class="vpp-detail__grid">
           <div class="vpp-detail__gallery slide-in-left">
             <div class="vpp-detail__img-container">
@@ -837,7 +969,7 @@ function renderDetail(categoryId, serviceId) {
             </div>
           </div>
           <div class="vpp-detail__info slide-in-right">
-            <span class="vpp-detail__tag">${category.name}</span>
+            <span class="vpp-detail__tag">${activeCat.name}</span>
             <h1 class="vpp-detail__title">${service.name}</h1>
             <div class="vpp-detail__rating-row">
               <div class="vpp-detail__stars">${renderDetailStars(service.rating || 0)}</div>
@@ -912,13 +1044,63 @@ function renderDetailStars(rating) {
 
 function findCategory(categoryId) {
   if (!window.APP_DATA || !window.APP_DATA.categories) return null;
-  return window.APP_DATA.categories.find(c => c.id === categoryId);
+  if (!categoryId) return window.APP_DATA.categories[0] || null;
+
+  // 1. Direct match by ID
+  let cat = window.APP_DATA.categories.find(c => c.id === categoryId);
+  if (cat) return cat;
+
+  // 2. Base ID match (strip language prefix if any)
+  const baseId = categoryId.replace(/^(gujarati|bengali|hindi|marathi|malayalam|odia|tamil|kannada|english|telugu)-/, '');
+  cat = window.APP_DATA.categories.find(c => {
+    const cBase = c.id.replace(/^(gujarati|bengali|hindi|marathi|malayalam|odia|tamil|kannada|english|telugu)-/, '');
+    return cBase === baseId || c.id.includes(baseId) || baseId.includes(c.id);
+  });
+  if (cat) return cat;
+
+  // 3. Fallback: match first category matching current language
+  const currentLang = state.selectedLanguage || 'telugu';
+  cat = window.APP_DATA.categories.find(c => {
+    if (currentLang === 'telugu' || currentLang === 'english') {
+      return !c.defaultLanguage || c.defaultLanguage === 'telugu';
+    }
+    return c.defaultLanguage === currentLang;
+  });
+
+  return cat || window.APP_DATA.categories[0];
 }
 
 function findService(categoryId, serviceId) {
+  if (!window.APP_DATA || !window.APP_DATA.categories || !serviceId) return null;
+  
+  // 1. First look inside specified category
   const category = findCategory(categoryId);
-  if (!category || !category.services) return null;
-  return category.services.find(s => s.id === serviceId);
+  if (category && category.services) {
+    const s = category.services.find(serv => serv.id === serviceId);
+    if (s) return s;
+  }
+
+  // 2. Search across ALL categories for serviceId
+  for (const cat of window.APP_DATA.categories) {
+    if (cat.services) {
+      const s = cat.services.find(serv => serv.id === serviceId);
+      if (s) return s;
+    }
+  }
+
+  // 3. Match base ID across all categories
+  const baseServiceId = serviceId.replace(/^(gujarati|bengali|hindi|marathi|malayalam|odia|tamil|kannada|english|telugu)-/, '');
+  for (const cat of window.APP_DATA.categories) {
+    if (cat.services) {
+      const s = cat.services.find(serv => {
+        const sBase = serv.id.replace(/^(gujarati|bengali|hindi|marathi|malayalam|odia|tamil|kannada|english|telugu)-/, '');
+        return sBase === baseServiceId;
+      });
+      if (s) return s;
+    }
+  }
+
+  return null;
 }
 
 function getCategoryGradient(imageType) {
@@ -1373,15 +1555,15 @@ function renderAdmin() {
             <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
               <div style="display: flex; flex-direction: column; flex: 1; min-width: 90px;">
                 <label style="font-size: 0.7rem; color: #666; font-weight: 600; margin-bottom: 2px;">MIN PRICE (₹)</label>
-                <input type="number" id="price-min-${s.id}" class="vpp-admin-input" value="${eff.priceMin !== undefined ? eff.priceMin : ''}" placeholder="${s.priceMin || 0}" style="margin: 0; padding: 6px 8px; font-size: 0.9rem; background: #FFF;">
+                <input type="number" id="price-min-${s.id}" class="vpp-admin-input vpp-admin-price-input" data-service-id="${s.id}" value="${eff.priceMin !== undefined ? eff.priceMin : ''}" placeholder="${s.priceMin || 0}" style="margin: 0; padding: 6px 8px; font-size: 0.9rem; background: #FFF;">
               </div>
               <div style="display: flex; flex-direction: column; flex: 1; min-width: 90px;">
                 <label style="font-size: 0.7rem; color: #666; font-weight: 600; margin-bottom: 2px;">MAX PRICE (₹)</label>
-                <input type="number" id="price-max-${s.id}" class="vpp-admin-input" value="${eff.priceMax !== undefined ? eff.priceMax : ''}" placeholder="${s.priceMax || 0}" style="margin: 0; padding: 6px 8px; font-size: 0.9rem; background: #FFF;">
+                <input type="number" id="price-max-${s.id}" class="vpp-admin-input vpp-admin-price-input" data-service-id="${s.id}" value="${eff.priceMax !== undefined ? eff.priceMax : ''}" placeholder="${s.priceMax || 0}" style="margin: 0; padding: 6px 8px; font-size: 0.9rem; background: #FFF;">
               </div>
               <button class="vpp-btn vpp-btn--primary admin-price-save-btn" data-service-id="${s.id}" data-orig-min="${s.priceMin || 0}" data-orig-max="${s.priceMax || 0}" style="padding: 8px 12px; font-size: 0.8rem; height: 34px; margin-bottom: 1px;">💾 Save Price</button>
             </div>
-            <span style="font-size: 0.72rem; color: #777; margin-top: 4px; display: block;">* Leave empty to keep existing price intact</span>
+            <span style="font-size: 0.72rem; color: #777; margin-top: 4px; display: block;">* Saves instantly while typing! Leave empty to keep existing price intact</span>
           </div>
 
           <!-- Image Section -->
@@ -1398,6 +1580,22 @@ function renderAdmin() {
         </div>
       `;
     }).join('');
+
+    // Instant Price Input Listener (Saves INSTANTLY while typing in input boxes)
+    document.querySelectorAll('.vpp-admin-price-input').forEach(input => {
+      const handleInstantSave = (e) => {
+        const serviceId = e.target.dataset.serviceId;
+        const minEl = document.getElementById(`price-min-${serviceId}`);
+        const maxEl = document.getElementById(`price-max-${serviceId}`);
+        const minValStr = minEl ? minEl.value.trim() : '';
+        const maxValStr = maxEl ? maxEl.value.trim() : '';
+        
+        saveCustomPrice(serviceId, minValStr, maxValStr);
+      };
+
+      input.addEventListener('input', handleInstantSave);
+      input.addEventListener('change', handleInstantSave);
+    });
 
     // Attach Price Save Listeners
     document.querySelectorAll('.admin-price-save-btn').forEach(btn => {
@@ -1422,19 +1620,20 @@ function renderAdmin() {
         const finalMax = maxValStr !== '' ? parseInt(maxValStr, 10) : currentEffMax;
         
         saveCustomPrice(serviceId, finalMin, finalMax);
-        showToast(`💰 Price range updated: ₹${finalMin.toLocaleString('en-IN')} - ₹${finalMax.toLocaleString('en-IN')}`);
+        showToast(`💰 Price range saved: ₹${finalMin.toLocaleString('en-IN')} - ₹${finalMax.toLocaleString('en-IN')}`);
       });
     });
 
-    // Attach File Input Listeners (With Mobile Photo Compression & Cloud Sync)
+    // Attach File Input Listeners (With Mobile Photo Compression & CORS-Free Cloud Sync)
     document.querySelectorAll('.vpp-admin-file-input').forEach(input => {
       input.addEventListener('change', (e) => {
         const serviceId = e.target.dataset.serviceId;
         const file = e.target.files[0];
         if (file) {
-          showToast('⏳ Optimizing & uploading photo to Firebase Cloud Storage...');
+          showToast('⏳ Optimizing & syncing photo live to Cloud...');
           compressImageFile(file, (base64Data) => {
-            saveCustomImage(serviceId, base64Data, file);
+            saveCustomImage(serviceId, base64Data);
+            uploadToFreeCDN(base64Data, serviceId);
             const thumbEl = document.getElementById(`admin-thumb-${serviceId}`);
             if (thumbEl) thumbEl.src = base64Data;
           });
