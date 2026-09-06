@@ -9,6 +9,14 @@ const state = {
 // Firebase Cloud Configuration & Global Realtime Sync
 window.VPP_CLOUD_IMAGES = {};
 window.VPP_CLOUD_PRICES = {};
+
+// Auto-load saved custom Cloudinary images & prices from localStorage into memory on boot
+try {
+  const savedImages = JSON.parse(localStorage.getItem('vpp_custom_images') || '{}');
+  window.VPP_CLOUD_IMAGES = { ...savedImages };
+  const savedPrices = JSON.parse(localStorage.getItem('vpp_custom_prices') || '{}');
+  window.VPP_CLOUD_PRICES = { ...savedPrices };
+} catch (e) {}
 let db = null;
 let storage = null;
 let auth = null;
@@ -268,19 +276,25 @@ function showToast(message) {
   }, 3000);
 }
 
-// Image mapping helper function
+// Image mapping helper function (Prioritizes custom Cloudinary uploads!)
 function getServiceImage(rawService) {
   if (!rawService) return 'assets/images/devotion.png';
   
-  // 1. Check custom uploaded override from Admin / Cloud DB
-  if (rawService.id && window.VPP_CLOUD_IMAGES && window.VPP_CLOUD_IMAGES[rawService.id]) {
-    return window.VPP_CLOUD_IMAGES[rawService.id];
+  // 1. Check custom uploaded override from Admin / Cloud DB / LocalStorage
+  const customImages = getCustomImages();
+  if (rawService.id && customImages && customImages[rawService.id]) {
+    return customImages[rawService.id];
   }
   
   const service = getEffectiveService(rawService);
   if (!service) return 'assets/images/devotion.png';
 
-  // 2. Exact match from SERVICE_IMAGES map
+  // 2. Check if effective service object has a custom URL (Cloudinary / HTTPS URL / base64)
+  if (service.image && (service.image.startsWith('http://') || service.image.startsWith('https://') || service.image.startsWith('data:'))) {
+    return service.image;
+  }
+
+  // 3. Exact match from SERVICE_IMAGES map
   if (window.SERVICE_IMAGES && window.SERVICE_IMAGES[service.id]) {
     return window.SERVICE_IMAGES[service.id];
   }
