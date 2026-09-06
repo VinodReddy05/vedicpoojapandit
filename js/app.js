@@ -16,7 +16,7 @@ let auth = null;
 try {
   if (typeof firebase !== 'undefined') {
     const firebaseConfig = window.FIREBASE_CONFIG || {
-      apiKey: "AIzaSyVPP-SacredPoojaCloudKey2026",
+      apiKey: "YOUR_FIREBASE_API_KEY", // Replace with your real Firebase API Key from Firebase Console
       authDomain: "vedic-pooja-pandit.firebaseapp.com",
       projectId: "vedic-pooja-pandit",
       storageBucket: "vedic-pooja-pandit.appspot.com",
@@ -24,41 +24,46 @@ try {
       appId: "1:9014747545:web:vpp2026cloudsync"
     };
 
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
+    // Only initialize if a real valid API key is supplied (not placeholder)
+    if (firebaseConfig.apiKey && !firebaseConfig.apiKey.includes('YOUR_FIREBASE_API_KEY') && !firebaseConfig.apiKey.includes('SacredPoojaCloudKey')) {
+      if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+      }
+      db = firebase.firestore();
+      if (firebase.storage) storage = firebase.storage();
+      if (firebase.auth) auth = firebase.auth();
+
+      // Listen for Realtime Cloud Image Database updates across all devices
+      db.collection("custom_images").onSnapshot((snapshot) => {
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (data && data.image) {
+            window.VPP_CLOUD_IMAGES[doc.id] = data.image;
+          }
+        });
+        if (typeof handleRoute === 'function') {
+          handleRoute();
+        }
+      }, (error) => {});
+
+      // Listen for Realtime Cloud Price Database updates across all devices
+      db.collection("custom_prices").onSnapshot((snapshot) => {
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (data && (data.priceMin !== undefined || data.priceMax !== undefined)) {
+            window.VPP_CLOUD_PRICES[doc.id] = {
+              priceMin: data.priceMin,
+              priceMax: data.priceMax
+            };
+          }
+        });
+        if (typeof handleRoute === 'function') {
+          handleRoute();
+        }
+      }, (error) => {});
+    } else {
+      console.info("ℹ️ Local storage mode active. Provide a valid Firebase API Key in app.js or window.FIREBASE_CONFIG for live multi-device cloud sync.");
     }
-    db = firebase.firestore();
-    if (firebase.storage) storage = firebase.storage();
-    if (firebase.auth) auth = firebase.auth();
-
-    // Listen for Realtime Cloud Image Database updates across all devices
-    db.collection("custom_images").onSnapshot((snapshot) => {
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        if (data && data.image) {
-          window.VPP_CLOUD_IMAGES[doc.id] = data.image;
-        }
-      });
-      if (typeof handleRoute === 'function') {
-        handleRoute();
-      }
-    }, (error) => {});
-
-    // Listen for Realtime Cloud Price Database updates across all devices
-    db.collection("custom_prices").onSnapshot((snapshot) => {
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        if (data && (data.priceMin !== undefined || data.priceMax !== undefined)) {
-          window.VPP_CLOUD_PRICES[doc.id] = {
-            priceMin: data.priceMin,
-            priceMax: data.priceMax
-          };
-        }
-      });
-      if (typeof handleRoute === 'function') {
-        handleRoute();
-      }
-    }, (error) => {});
   }
 } catch (e) {
   console.warn("Cloud DB fallback mode:", e);
@@ -180,40 +185,47 @@ function saveCustomImage(serviceId, imageData) {
   }
 }
 
-// Free High-Speed Public CDN Helper (Generates 100% CORS-free public image URL)
-function uploadToFreeCDN(base64Data, serviceId) {
+// Cloudinary CDN Image Upload Helper (Preset: vedicpoojapandit, Cloud: kqqadx7z)
+async function uploadToCloudinary(fileOrBase64, serviceId = null) {
+  if (!fileOrBase64) return null;
+
   try {
-    const apiKey = "6d207e02198a847aa98d0a2a901485a5";
     const formData = new FormData();
-    const cleanBase64 = base64Data.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
-    formData.append("image", cleanBase64);
+    formData.append("file", fileOrBase64);
+    formData.append("upload_preset", "vedicpoojapandit");
 
-    fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-      method: "POST",
-      body: formData
-    })
-    .then(res => res.json())
-    .then(data => {
-      if (data && data.data && data.data.url) {
-        const cdnUrl = data.data.url;
-        window.VPP_CLOUD_IMAGES[serviceId] = cdnUrl;
-        try {
-          const images = JSON.parse(localStorage.getItem('vpp_custom_images') || '{}');
-          images[serviceId] = cdnUrl;
-          localStorage.setItem('vpp_custom_images', JSON.stringify(images));
-        } catch (e) {}
-
-        if (db) {
-          db.collection("custom_images").doc(serviceId).set({
-            image: cdnUrl,
-            updatedAt: new Date().toISOString()
-          });
-        }
+    const response = await fetch(
+      "https://api.cloudinary.com/v1_1/kqqadx7z/image/upload",
+      {
+        method: "POST",
+        body: formData,
       }
-    })
-    .catch((e) => {});
-  } catch (e) {}
+    );
+
+    const data = await response.json();
+
+    if (data && data.secure_url) {
+      const cdnUrl = data.secure_url;
+      console.log("☁️ Cloudinary Upload Success:", cdnUrl);
+
+      if (serviceId) {
+        saveCustomImage(serviceId, cdnUrl);
+        const thumbEl = document.getElementById(`admin-thumb-${serviceId}`);
+        if (thumbEl) thumbEl.src = cdnUrl;
+      }
+
+      showToast('☁️ Uploaded to Cloudinary successfully!');
+      return cdnUrl;
+    } else {
+      throw new Error(data && data.error ? data.error.message : 'Cloudinary upload failed');
+    }
+  } catch (error) {
+    console.error("Cloudinary upload error:", error);
+    showToast('⚠️ Cloudinary upload failed. Check console for details.');
+    return null;
+  }
 }
+
 
 function resetCustomService(serviceId) {
   const prices = getCustomPrices();
@@ -277,7 +289,49 @@ function getServiceImage(rawService) {
   const sName = (service.name || '').toLowerCase();
 
   // 3. Smart Name & Keyword Based Image Resolver (Ensures every pooja matches its exact name!)
-  if (sId.includes('rudrabhishekam') || sId.includes('pashupatham') || sName.includes('rudra') || sName.includes('shiva') || sName.includes('abhishekam') || sName.includes('linga')) {
+  if (sId.includes('akshara') || sName.includes('akshara')) {
+    return 'assets/images/aksharabhyasam.jpg';
+  }
+  if (sId.includes('vara-pashupatham') || sName.includes('vara pashupatham')) {
+    return 'assets/images/vara_pashupatham.png';
+  }
+  if (sId.includes('kanya-pashupatham') || sName.includes('kanya pashupatham')) {
+    return 'assets/images/kanya_pashupatham.png';
+  }
+  if (sId.includes('vijay-pashupatham') || sName.includes('vijaya pashupatham')) {
+    return 'assets/images/vijay_pashupatham.png';
+  }
+  if (sId.includes('aarogya-pashupatham') || sName.includes('aarogya pashupatham')) {
+    return 'assets/images/aarogya_pashupatham.png';
+  }
+  if (sId.includes('dhanvantari-pashupatham') || sName.includes('dhanvantari pashupatham')) {
+    return 'assets/images/dhanvantari_pashupatham.png';
+  }
+  if (sId.includes('kubera-pashupatham') || sName.includes('kubera pashupatham')) {
+    return 'assets/images/kubera_pashupatham.png';
+  }
+  if (sId.includes('kalyanam-pashupatham') || sName.includes('kalyana pashupatham')) {
+    return 'assets/images/kalyana_pashupatham.png';
+  }
+  if (sId.includes('annaprasanam') || sId.includes('onnoprashon') || sId.includes('mukhe-bhaat') || sId.includes('choroonu') || sName.includes('annaprasan') || sName.includes('mukhe bhaat')) {
+    return 'assets/images/annaprasanam.png';
+  }
+  if (sId.includes('barasala') || sId.includes('namakaram') || sId.includes('namkaran') || sId.includes('ekoisia') || sName.includes('naming')) {
+    return 'assets/images/barasala.png';
+  }
+  if (sId.includes('nischitartham') || sId.includes('nirbandha') || sName.includes('engagement') || sName.includes('nischitartham')) {
+    return 'assets/images/nischitartham.png';
+  }
+  if (sId.includes('karna-vedha') || sName.includes('karna vedha') || sName.includes('ear')) {
+    return 'assets/images/karna_vedha.png';
+  }
+  if (sId.includes('seemantham') || sName.includes('seemantham') || sName.includes('baby shower')) {
+    return 'assets/images/seemantham.png';
+  }
+  if (sId.includes('astrologer') || sId.includes('muhurat') || sId.includes('muhurtham') || sId.includes('jyotish') || sName.includes('astrologer')) {
+    return 'assets/images/astrologer.png';
+  }
+  if (sId.includes('rudrabhishekam') || sName.includes('rudra') || sName.includes('shiva') || sName.includes('abhishekam') || sName.includes('linga')) {
     return 'assets/images/rudrabhishekam.png';
   }
   if (sId.includes('satyanarayana') || sName.includes('satyanarayana') || sName.includes('vishnu')) {
@@ -1418,7 +1472,7 @@ function renderAdmin() {
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; background: var(--color-maroon-dark); padding: 20px 24px; border-radius: var(--radius-md); border: 1px solid rgba(212, 175, 55, 0.4);">
             <div>
               <h2 style="color: var(--color-gold); font-size: 1.6rem; margin: 0 0 4px 0;">🔐 Pandit Admin Control Panel</h2>
-              <p style="color: rgba(255,255,255,0.8); font-size: 0.9rem; margin: 0;">Manage service prices & upload custom images directly from mobile gallery, camera, or URL link.</p>
+              <p style="color: rgba(255,255,255,0.8); font-size: 0.9rem; margin: 0;">Manage service prices & upload custom images live to Cloudinary CDN.</p>
             </div>
             <div>
               <button id="admin-logout-btn" class="vpp-btn" style="background: rgba(229, 81, 0, 0.2); color: #FF9800; border: 1px solid #FF9800; font-size: 0.85rem; padding: 8px 16px;">🚪 Logout</button>
@@ -1566,16 +1620,21 @@ function renderAdmin() {
             <span style="font-size: 0.72rem; color: #777; margin-top: 4px; display: block;">* Saves instantly while typing! Leave empty to keep existing price intact</span>
           </div>
 
-          <!-- Image Section -->
-          <div style="background: #F9F9F9; padding: 12px; border-radius: 6px; display: flex; flex-direction: column; gap: 10px; border: 1px dashed #DDD;">
-            <span style="font-size: 0.8rem; font-weight: 600; color: #444;">📸 UPLOAD CUSTOM IMAGE:</span>
+          <!-- Image Section: Cloudinary Image Upload -->
+          <div style="background: #F9F9F9; padding: 12px; border-radius: 6px; border: 1px dashed #DDD; display: flex; flex-direction: column; gap: 8px;">
+            <span style="font-size: 0.8rem; font-weight: 600; color: #444;">☁️ UPLOAD CUSTOM IMAGE:</span>
+            
+            <!-- File Input and Upload Button -->
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-              <label class="vpp-admin-file-label" style="flex: 1; text-align: center;">
+              <input type="file" id="imageInput-${s.id}" class="vpp-admin-file-input" data-service-id="${s.id}" accept="image/*" style="display: none;" />
+              <button id="uploadButton-${s.id}" class="vpp-btn vpp-btn--primary admin-upload-btn" data-service-id="${s.id}" style="flex: 1; padding: 8px 14px; font-size: 0.85rem; display: flex; align-items: center; justify-content: center; gap: 6px;">
                 📱 Mobile Gallery / Camera
-                <input type="file" class="vpp-admin-file-input" data-service-id="${s.id}" accept="image/*">
-              </label>
-              <button class="vpp-admin-btn-reset admin-url-btn" data-service-id="${s.id}" style="padding: 8px 12px;">🔗 URL Link</button>
+              </button>
+              <button class="vpp-admin-btn-reset admin-url-btn" data-service-id="${s.id}" style="padding: 8px 12px; font-size: 0.85rem;">🔗 URL Link</button>
             </div>
+
+            <!-- Status Message -->
+            <p id="statusMessage-${s.id}" style="margin: 4px 0 0 0; font-size: 0.8rem; font-weight: bold; min-height: 18px;"></p>
           </div>
         </div>
       `;
@@ -1624,24 +1683,92 @@ function renderAdmin() {
       });
     });
 
-    // Attach File Input Listeners (With Mobile Photo Compression & CORS-Free Cloud Sync)
-    document.querySelectorAll('.vpp-admin-file-input').forEach(input => {
-      input.addEventListener('change', (e) => {
+    // 1. Click Upload Button -> Opens Mobile Gallery / Laptop File Folder directly
+    document.querySelectorAll('.admin-upload-btn').forEach(uploadButton => {
+      uploadButton.addEventListener('click', (e) => {
         const serviceId = e.target.dataset.serviceId;
-        const file = e.target.files[0];
-        if (file) {
-          showToast('⏳ Optimizing & syncing photo live to Cloud...');
-          compressImageFile(file, (base64Data) => {
-            saveCustomImage(serviceId, base64Data);
-            uploadToFreeCDN(base64Data, serviceId);
-            const thumbEl = document.getElementById(`admin-thumb-${serviceId}`);
-            if (thumbEl) thumbEl.src = base64Data;
-          });
+        const imageInput = document.getElementById(`imageInput-${serviceId}`);
+        if (imageInput) {
+          imageInput.click(); // Opens mobile camera / laptop file browser dialog directly!
         }
       });
     });
 
-    // Attach URL Listeners
+    // 2. File Selection Handler -> Automatically uploads selected photo to Cloudinary
+    document.querySelectorAll('.vpp-admin-file-input').forEach(imageInput => {
+      imageInput.addEventListener('change', async (e) => {
+        const serviceId = e.target.dataset.serviceId;
+        const uploadButton = document.getElementById(`uploadButton-${serviceId}`);
+        const statusMessage = document.getElementById(`statusMessage-${serviceId}`);
+        const uploadedImage = document.getElementById(`admin-thumb-${serviceId}`);
+        const file = e.target.files[0];
+
+        if (!file) return;
+
+        if (uploadButton) {
+          uploadButton.disabled = true;
+          uploadButton.textContent = "Uploading...";
+        }
+
+        if (statusMessage) {
+          statusMessage.textContent = "⏳ Uploading photo live to Cloudinary...";
+          statusMessage.style.color = "#E65100";
+        }
+
+        // Instant local preview for immediate visual feedback
+        compressImageFile(file, (base64Data) => {
+          if (uploadedImage) uploadedImage.src = base64Data;
+        });
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("upload_preset", "vedicpoojapandit");
+
+        try {
+          const response = await fetch(
+            "https://api.cloudinary.com/v1_1/kqqadx7z/image/upload",
+            {
+              method: "POST",
+              body: formData,
+            }
+          );
+
+          const data = await response.json();
+
+          if (data.secure_url) {
+            if (statusMessage) {
+              statusMessage.textContent = "Upload Successful!";
+              statusMessage.style.color = "green";
+            }
+
+            if (uploadedImage) {
+              uploadedImage.src = data.secure_url;
+              uploadedImage.style.display = "block";
+            }
+
+            saveCustomImage(serviceId, data.secure_url);
+            console.log("Success! Image URL:", data.secure_url);
+            showToast('☁️ Upload Successful!');
+          } else {
+            throw new Error(data.error ? data.error.message : "Cloudinary upload error");
+          }
+
+        } catch (error) {
+          console.error("Error uploading image:", error);
+          if (statusMessage) {
+            statusMessage.textContent = "Upload failed. Check console for details.";
+            statusMessage.style.color = "red";
+          }
+        } finally {
+          if (uploadButton) {
+            uploadButton.disabled = false;
+            uploadButton.textContent = "📱 Mobile Gallery / Camera";
+          }
+        }
+      });
+    });
+
+    // Attach URL Link Button Listener
     document.querySelectorAll('.admin-url-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const serviceId = e.target.dataset.serviceId;

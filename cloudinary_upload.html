@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloudinary Image Upload | Vedic Pooja Pandit</title>
+    <style>
+        :root {
+            --color-saffron: #E65100;
+            --color-gold: #D4AF37;
+            --color-maroon: #5C0614;
+            --font-body: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background: #FDFBF7;
+            color: #333;
+            margin: 0;
+            padding: 30px 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .upload-card {
+            background: #FFFFFF;
+            width: 100%;
+            max-width: 520px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(92, 6, 20, 0.1);
+            border: 1px solid rgba(212, 175, 55, 0.3);
+            padding: 32px;
+            text-align: center;
+        }
+
+        .upload-card__header {
+            margin-bottom: 24px;
+        }
+
+        .upload-card__logo {
+            font-size: 2.8rem;
+            margin-bottom: 8px;
+        }
+
+        .upload-card__title {
+            font-size: 1.5rem;
+            color: var(--color-maroon);
+            margin: 0 0 6px 0;
+            font-weight: 700;
+        }
+
+        .upload-card__subtitle {
+            font-size: 0.9rem;
+            color: #666;
+            margin: 0;
+        }
+
+        .preset-badge {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 4px 12px;
+            background: rgba(212, 175, 55, 0.15);
+            color: #8A6D0B;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border: 1px solid rgba(212, 175, 55, 0.4);
+        }
+
+        .drop-zone {
+            border: 2px dashed var(--color-gold);
+            border-radius: 12px;
+            padding: 30px 20px;
+            background: #FFFDF8;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .drop-zone:hover, .drop-zone--dragover {
+            background: rgba(230, 81, 0, 0.05);
+            border-color: var(--color-saffron);
+        }
+
+        .drop-zone__icon {
+            font-size: 2.2rem;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .drop-zone__text {
+            font-size: 0.95rem;
+            color: #555;
+            margin-bottom: 12px;
+        }
+
+        .drop-zone__file-input {
+            display: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #E65100 0%, #F57C00 100%);
+            color: #FFF;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: 0 4px 14px rgba(230, 81, 0, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(230, 81, 0, 0.4);
+        }
+
+        .btn:disabled {
+            background: #CCC;
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+
+        #statusMessage {
+            margin-top: 16px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            min-height: 24px;
+        }
+
+        .preview-container {
+            display: none;
+            margin-top: 24px;
+            padding: 16px;
+            background: #F8F9FA;
+            border-radius: 12px;
+            border: 1px solid #E0E0E0;
+            text-align: left;
+        }
+
+        .preview-container__img {
+            width: 100%;
+            max-height: 280px;
+            object-fit: contain;
+            border-radius: 8px;
+            background: #FFF;
+            border: 1px solid #DDD;
+            margin-bottom: 14px;
+        }
+
+        .url-box {
+            display: flex;
+            gap: 8px;
+        }
+
+        .url-box__input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #CCC;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-family: monospace;
+            background: #FFF;
+            outline: none;
+        }
+
+        .btn-copy {
+            background: var(--color-maroon);
+            color: #FFF;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .btn-copy:hover {
+            background: #7A0A1C;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="upload-card">
+        <div class="upload-card__header">
+            <div class="upload-card__logo">🕉️</div>
+            <h2 class="upload-card__title">Cloudinary Image Upload</h2>
+            <p class="upload-card__subtitle">Upload images directly to Cloudinary CDN</p>
+            <span class="preset-badge">Preset: vedicpoojapandit | Cloud: kqqadx7z</span>
+        </div>
+        
+        <!-- File Drag & Drop Zone -->
+        <div class="drop-zone" id="dropZone">
+            <span class="drop-zone__icon">📸</span>
+            <div class="drop-zone__text">Click to choose image or drag & drop here</div>
+            <input type="file" id="imageInput" class="drop-zone__file-input" accept="image/*" />
+            <button type="button" class="btn" id="selectBtn">Choose File</button>
+        </div>
+
+        <!-- Action Upload Button -->
+        <button class="btn" id="uploadButton" style="width: 100%; justify-content: center;">
+            <span>☁️ Upload to Cloudinary</span>
+        </button>
+
+        <!-- Status Message -->
+        <p id="statusMessage"></p>
+
+        <!-- Image Preview & CDN Link Result -->
+        <div class="preview-container" id="previewContainer">
+            <img id="uploadedImage" class="preview-container__img" alt="Uploaded Image Preview" />
+            <div class="url-box">
+                <input type="text" id="imageUrlInput" class="url-box__input" readonly placeholder="Cloudinary URL" />
+                <button class="btn-copy" id="copyUrlButton">Copy URL</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const imageInput = document.getElementById('imageInput');
+        const selectBtn = document.getElementById('selectBtn');
+        const dropZone = document.getElementById('dropZone');
+        const uploadButton = document.getElementById('uploadButton');
+        const statusMessage = document.getElementById('statusMessage');
+        const previewContainer = document.getElementById('previewContainer');
+        const uploadedImage = document.getElementById('uploadedImage');
+        const imageUrlInput = document.getElementById('imageUrlInput');
+        const copyUrlButton = document.getElementById('copyUrlButton');
+
+        // File selection triggers
+        selectBtn.addEventListener('click', () => imageInput.click());
+        dropZone.addEventListener('click', (e) => {
+            if (e.target !== selectBtn) imageInput.click();
+        });
+
+        // Drag and drop handlers
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                dropZone.classList.add('drop-zone--dragover');
+            }, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('drop-zone--dragover');
+            }, false);
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files && files.length > 0) {
+                imageInput.files = files;
+                updateFileSelectionText(files[0].name);
+            }
+        });
+
+        imageInput.addEventListener('change', () => {
+            if (imageInput.files[0]) {
+                updateFileSelectionText(imageInput.files[0].name);
+            }
+        });
+
+        function updateFileSelectionText(filename) {
+            statusMessage.textContent = `Selected: ${filename}`;
+            statusMessage.style.color = "#333";
+        }
+
+        // Cloudinary Unsigned Upload
+        uploadButton.addEventListener('click', async () => {
+            const file = imageInput.files[0];
+            
+            if (!file) {
+                alert("Please select an image first!");
+                return;
+            }
+
+            uploadButton.disabled = true;
+            uploadButton.textContent = "Uploading to Cloudinary...";
+            statusMessage.textContent = "⏳ Uploading photo live to Cloudinary CDN...";
+            statusMessage.style.color = "#E65100";
+            previewContainer.style.display = "none";
+
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("upload_preset", "vedicpoojapandit"); 
+
+            try {
+                const response = await fetch(
+                    "https://api.cloudinary.com/v1_1/kqqadx7z/image/upload",
+                    {
+                        method: "POST",
+                        body: formData,
+                    }
+                );
+
+                const data = await response.json();
+                
+                if (data.secure_url) {
+                    statusMessage.textContent = "✅ Upload Successful!";
+                    statusMessage.style.color = "#2E7D32";
+                    
+                    uploadedImage.src = data.secure_url;
+                    imageUrlInput.value = data.secure_url;
+                    previewContainer.style.display = "block";
+                    
+                    console.log("Success! Cloudinary Image URL:", data.secure_url);
+                } else {
+                    throw new Error(data.error ? data.error.message : "Cloudinary upload error");
+                }
+
+            } catch (error) {
+                console.error("Error uploading image:", error);
+                statusMessage.textContent = "❌ Upload failed: " + error.message;
+                statusMessage.style.color = "#D32F2F";
+            } finally {
+                uploadButton.disabled = false;
+                uploadButton.textContent = "☁️ Upload to Cloudinary";
+            }
+        });
+
+        // Copy URL to Clipboard
+        copyUrlButton.addEventListener('click', () => {
+            imageUrlInput.select();
+            navigator.clipboard.writeText(imageUrlInput.value);
+            copyUrlButton.textContent = "Copied!";
+            setTimeout(() => {
+                copyUrlButton.textContent = "Copy URL";
+            }, 2000);
+        });
+    </script>
+</body>
+</html>
