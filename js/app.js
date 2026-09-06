@@ -41,17 +41,25 @@ try {
       if (firebase.storage) storage = firebase.storage();
       if (firebase.auth) auth = firebase.auth();
 
-      // Listen for Realtime Cloud Image Database updates across all devices
+      // Listen for Realtime Cloud Image Database updates (supports custom_images & services collections)
       db.collection("custom_images").onSnapshot((snapshot) => {
         snapshot.forEach((doc) => {
           const data = doc.data();
-          if (data && data.image) {
-            window.VPP_CLOUD_IMAGES[doc.id] = data.image;
+          if (data && (data.image || data.imageUrl)) {
+            window.VPP_CLOUD_IMAGES[doc.id] = data.image || data.imageUrl;
           }
         });
-        if (typeof handleRoute === 'function') {
-          handleRoute();
-        }
+        if (typeof handleRoute === 'function') handleRoute();
+      }, (error) => {});
+
+      db.collection("services").onSnapshot((snapshot) => {
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (data && (data.imageUrl || data.image)) {
+            window.VPP_CLOUD_IMAGES[doc.id] = data.imageUrl || data.image;
+          }
+        });
+        if (typeof handleRoute === 'function') handleRoute();
       }, (error) => {});
 
       // Listen for Realtime Cloud Price Database updates across all devices
@@ -179,13 +187,20 @@ function saveCustomImage(serviceId, imageData) {
     localStorage.setItem('vpp_custom_images', JSON.stringify(images));
   } catch (e) {}
 
-  // 2. Primary: Save to Firebase Firestore Cloud DB (100% CORS-Free Realtime Cloud Sync across all devices)
+  // 2. Primary: Save to Firebase Firestore Cloud DB (Syncs custom_images & services collections)
   if (db) {
     try {
       db.collection("custom_images").doc(serviceId).set({
         image: imageData,
+        imageUrl: imageData,
         updatedAt: new Date().toISOString()
-      }).then(() => {
+      });
+      
+      db.collection("services").doc(serviceId).set({
+        imageUrl: imageData,
+        image: imageData,
+        updatedAt: new Date().toISOString()
+      }, { merge: true }).then(() => {
         showToast('☁️ Saved to Cloud! Syncing live across all devices globally.');
       }).catch((err) => {
         console.warn("Cloud Firestore save warning:", err);
